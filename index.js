@@ -1,6 +1,7 @@
 import {delSetting, getSettings, log, setSettings} from "./utils.js";
 import {debounce} from '/scripts/utils.js';
 import {loadWorldInfo, world_names} from "/scripts/world-info.js";
+import {Popup} from "/scripts/popup.js";
 
 const REVISION_UI_HTML = `
 <div class="revision-control-panel" style="width: 100%; box-sizing: border-box; padding: 10px; border-bottom: 1px solid #444; margin-bottom: 10px; background: rgba(0,0,0,0.2); border-radius: 4px;">
@@ -85,6 +86,31 @@ class LoreEntryRevision {
         });
     }
 
+    /**
+     * Compares the current physical DOM values against this revision's cached payload.
+     * Returns true if they match perfectly, false if the DOM has diverged.
+     */
+    matchesDom(container) {
+        const $container = $(container);
+
+        // Check standard text/select fields
+        for (const name of this.fields) {
+            const domVal = $container.find(`[name="${name}"]`).val() ?? '';
+            const storedVal = this.data[name] ?? '';
+            // Cast to string to prevent loose type-coercion bugs (e.g., numbers vs strings)
+            if (String(domVal) !== String(storedVal)) return false;
+        }
+
+        // Check checkboxes
+        for (const name of this.checkboxes) {
+            const domChecked = $container.find(`[name="${name}"]`).is(':checked');
+            const storedChecked = !!this.data[name];
+            if (domChecked !== storedChecked) return false;
+        }
+
+        return true;
+    }
+
     updateData(key, value) {
         this.data[key] = value;
         this.lastModified = Date.now();
@@ -150,11 +176,23 @@ class LoreEntry {
             this.switchToRevision(idx, $container);
         });
 
-        // If there are no existing versions, automatically instantiate an initial track snapshot
         if (this.revisions.length === 0) {
+            // No history exists yet? Take a snapshot of the current DOM state
             this.createNewRevisionFromCurrentState($container);
         } else {
-            this.switchToRevision(this.currentRevision !== -1 ? this.currentRevision : 0, $container);
+            const targetIndex = this.currentRevision !== -1 ? this.currentRevision : 0;
+            const targetRevision = this.revisions[targetIndex];
+
+            // Evaluate if the DOM text has outpaced our history tracker
+            if (targetRevision && !targetRevision.matchesDom($container)) {
+                log(`VCS: Desynchronization detected for entry UID ${this.uid} (offline edits found). Creating auto-snapshot.`);
+
+                // Instantly capture the offline changes as the newest version history node
+                this.createNewRevisionFromCurrentState($container);
+            } else {
+                // The DOM matches our records perfectly. Safe to restore state and bind event tracking.
+                this.switchToRevision(targetIndex, $container);
+            }
         }
     }
 
@@ -390,6 +428,123 @@ class WorldInfoVCSManager {
         this.save();
     }
 
+    wireBindGlobalPanel() {
+        const PANEL_HTML = `
+        <div id="vcs_global_panel" class="flex-container alignitemscenter" style="width: 100%; box-sizing: border-box; padding: 5px 10px; background: rgba(0,0,0,0.15); margin: 5px 0; border-radius: 4px; border: 1px solid rgba(255,255,255,0.05);">
+            <span style="font-weight: bold; flex: 1; opacity: 0.85;" data-i18n="VCS Revisions">Revisions</span>
+            <div class="flex-container flexGap5">
+                <input type="file" id="vcs_global_import_file" accept=".json" style="display: none;">
+                <div id="vcs_global_import_btn" class="menu_button fa-solid fa-file-import interactable" title="Import VCS History JSON" role="button"></div>
+                <div id="vcs_global_export_btn" class="menu_button fa-solid fa-file-export interactable" title="Export VCS History JSON" role="button"></div>
+            </div>
+        </div>`;
+
+        // Safely insert between targeted layout rows
+        const $target = $('#world_popup > div:nth-child(2)');
+        if ($target.length > 0) {
+            $target.after(PANEL_HTML);
+        }
+
+        // Logic handler to compile and export the tracking configuration
+        $(document).off('click', '#vcs_global_export_btn').on('click', '#vcs_global_export_btn', () => {
+            if (!this.current || !this.current.id) {
+                toastr.warning("No active lorebook selected to export history records.");
+                return;
+            }
+
+            const dataStr = JSON.stringify(this.current.toJson(), null, 4);
+            const blob = new Blob([dataStr], { type: "application/json" });
+            const url = URL.createObjectURL(blob);
+
+            const downloadLink = document.createElement("a");
+            downloadLink.href = url;
+            downloadLink.download = `${this.current.id}_vcs_history.json`;
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            document.body.removeChild(downloadLink);
+            URL.revokeObjectURL(url);
+
+            log(`VCS: Exported system tracking snapshot for ${this.current.id}`);
+        });
+
+        // Trigger native file selection wrapper mechanics via matching input proxy click events
+        $(document).off('click', '#vcs_global_import_btn').on('click', '#vcs_global_import_btn', () => {
+            if (!this.current || !this.current.id) {
+                toastr.warning("Please select or create an active lorebook profile before importing tracking payload assets.");
+                return;
+            }
+            $('#vcs_global_import_file').trigger('click');
+        });
+
+        // Event listener monitoring data ingestion from imported JSON records
+        $(document).off('change', '#vcs_global_import_file').on('change', '#vcs_global_import_file', (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = async (event) => {
+                try {
+                    const parsed = JSON.parse(event.target.result);
+
+                    if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.entries)) {
+                        throw new Error("Invalid structure formatting: Missing entries repository context.");
+                    }
+
+                    const fileBookId = parsed.id;
+                    const targetBookId = this.current.id;
+
+                    // --- SANITY CHECK: ID Mismatch Evaluation ---
+                    if (fileBookId && fileBookId !== targetBookId) {
+                        const warningMsg = `Warning: The import file contains revision history designated for lorebook "${fileBookId}", but your currently open lorebook editor is tracking "${targetBookId}".\n\nProceeding will map these past revisions directly onto "${targetBookId}". Are you sure you know what you are doing?`;
+
+                        let userConfirmed = false;
+                        // Mirror ST's async modular Popup utility if accessible; fallback to blocking confirm
+                        if (typeof Popup !== 'undefined' && Popup.show && Popup.show.confirm) {
+                            userConfirmed = await Popup.show.confirm("VCS History Mismatch Warning", warningMsg);
+                        } else {
+                            userConfirmed = confirm(warningMsg);
+                        }
+
+                        if (!userConfirmed) {
+                            log(`VCS: Import cancelled by user due to database target mismatch (${fileBookId} -> ${targetBookId}).`);
+                            $(e.target).val('');
+                            return;
+                        }
+                    }
+
+                    // --- UI CLEANUP: Close all expanded entries first ---
+                    log("VCS: Collapsing active UI textareas to prevent render bleed during history rewrite.");
+                    $('#CloseAllWIEntries').trigger('click');
+
+                    // Force target destination tracking context alignment
+                    parsed.id = targetBookId;
+
+                    // Parse structural records back into native extension entities
+                    this.current = WorldInfo.fromJson(parsed);
+
+                    // Update ecosystem registration index values
+                    if (!this.lorebooks.includes(targetBookId)) {
+                        this.lorebooks.push(targetBookId);
+                        setSettings("lorebooks", this.lorebooks);
+                    }
+
+                    this.persistToStorage();
+                    this.current.bind();
+
+                    toastr.success(`Successfully imported VCS snapshot layout records into ${targetBookId}!`);
+                    log(`VCS: Integrated backup tracking snapshot for ${targetBookId}`);
+
+                    $(e.target).val('');
+                } catch (err) {
+                    console.error(err);
+                    toastr.error(`Failed to ingest imported workspace track metadata: ${err.message}`);
+                    $(e.target).val('');
+                }
+            };
+            reader.readAsText(file);
+        });
+    }
+
     wireBindWorldSelect() {
         $('#world_editor_select').on('change', async () => {
             const selectedIndex = String($('#world_editor_select').find(':selected').val());
@@ -579,6 +734,7 @@ $(function () {
         $template.prepend(REVISION_UI_HTML);
     }
 
+    vcs.wireBindGlobalPanel();
     vcs.wireBindWorldSelect();
     vcs.wireBindEntry();
     vcs.wireEntryDelete();
