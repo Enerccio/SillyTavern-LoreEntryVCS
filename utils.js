@@ -45,3 +45,11 @@ export function getSettings(key, copy=false, defval = "") {
         return value
     }
 }
+
+export function delSetting(key) {
+    if (!extension_settings[MODULE_NAME]) {
+        extension_settings[MODULE_NAME] = {};
+    }
+    delete extension_settings[MODULE_NAME][key];
+    saveSettingsDebounced();
+}

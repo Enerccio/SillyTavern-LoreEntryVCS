@@ -1,4 +1,4 @@
-import {getSettings, log, setSettings} from "./utils.js";
+import {delSetting, getSettings, log, setSettings} from "./utils.js";
 import {debounce} from '/scripts/utils.js';
 import {loadWorldInfo, world_names} from "/scripts/world-info.js";
 
@@ -117,7 +117,7 @@ class LoreEntryRevision {
 
 class LoreEntry {
     constructor() {
-        this.id = null;
+        this.uid = null;
         this.revisions = [];
         this.currentRevision = -1;
     }
@@ -232,7 +232,7 @@ class LoreEntry {
 
     static fromJson(entry) {
         const loreEntry = new LoreEntry();
-        loreEntry.id = entry.id;
+        loreEntry.uid = entry.uid;
         loreEntry.revisions = (entry.revisions || []).map(revision => LoreEntryRevision.fromJson(revision));
         loreEntry.currentRevision = entry.currentRevision !== undefined ? entry.currentRevision : -1;
         return loreEntry;
@@ -240,7 +240,7 @@ class LoreEntry {
 
     toJson() {
         return {
-            id: this.id,
+            uid: this.uid,
             revisions: this.revisions.map(revision => revision.toJson()),
             currentRevision: this.currentRevision
         };
@@ -280,12 +280,12 @@ class WorldInfo {
     }
 
     bindElement(uid, $container) {
-        const entry = this.entries.find(e => e.id === uid);
+        const entry = this.entries.find(e => e.uid === uid);
         if (entry) {
             entry.bindToDom($container);
         } else {
             const newEntry = new LoreEntry();
-            newEntry.id = uid;
+            newEntry.uid = uid;
             this.entries.push(newEntry);
             newEntry.bindToDom($container);
         }
@@ -302,6 +302,30 @@ class WorldInfoVCSManager {
         this.save = debounce(() => {
             this.persistToStorage();
         });
+    }
+
+    confirmDelete(uid) {
+        if (uid !== undefined && uid !== null && this.current) {
+            log(`VCS: Purging tracking metadata for entry UID ${uid}`);
+            // Loose inequality check balances string/number coercion from data attributes safely
+            // noinspection EqualityComparisonWithCoercionJS
+            this.current.entries = this.current.entries.filter(e => e.uid != uid);
+            this.save();
+        }
+    }
+
+    confirmDeleteWorld(worldInfoId) {
+        if (worldInfoId && this.lorebooks.includes(worldInfoId)) {
+            log(`VCS: Purging all tracking metadata for world ID ${worldInfoId}`);
+            delSetting(`lorebook_${worldInfoId}`);
+            this.lorebooks = this.lorebooks.filter(id => id !== worldInfoId);
+            setSettings("lorebooks", this.lorebooks);
+
+            if (this.current && this.current.id === worldInfoId) {
+                this.current = null;
+            }
+            this.save();
+        }
     }
 
     persistToStorage() {
@@ -334,9 +358,145 @@ class WorldInfoVCSManager {
         this.current.bindElement(uid, $container);
     }
 
+    totalPurge() {
+        for (const worldInfoId of this.lorebooks) {
+            delSetting(`lorebook_${worldInfoId}`);
+        }
+        this.lorebooks = [];
+        this.save();
+    }
+
+    wireBindWorldSelect() {
+        $('#world_editor_select').on('change', async () => {
+            const selectedIndex = String($('#world_editor_select').find(':selected').val());
+
+            if (selectedIndex === '') {
+                await vcs.load(null);
+            } else {
+                const worldName = world_names[selectedIndex];
+                setTimeout(async () => {
+                    const wi = await loadWorldInfo(worldName);
+                    if (wi) {
+                        await vcs.load(worldName);
+                    }
+                })
+            }
+        });
+    }
+
+    wireBindEntry() {
+        $(document).on('click', '.world_entry', async function() {
+            const $container = $(this).find('.world_entry_edit');
+            if ($container.length && !$container.data('vcs-bound')) {
+                await vcs.openEditor($container);
+                $container.data('vcs-bound', true);
+            }
+        });
+    }
+
+    writeEntryDelete() {
+
+        document.body.addEventListener('click', function (e) {
+            const targetButton = e.target.closest('.delete_entry_button');
+            if (!targetButton) return;
+
+            const worldEntry = targetButton.closest('.world_entry');
+            if (!worldEntry) return;
+
+            // Extract raw 'uid' attribute from the wrapper container
+            const uid = worldEntry.getAttribute('uid');
+            if (uid === undefined || uid === null) return;
+
+            log(`VCS: Intercepted delete trigger for UID ${uid}. Monitoring for popup confirmation.`);
+
+            // Spin up the mutation observer to look for the confirmation modal arriving
+            const observer = new MutationObserver((mutations, obs) => {
+                const $popup = $('dialog.popup').not('[data-vcs-delete-uid]');
+                if ($popup.length) {
+                    $popup.attr('data-vcs-delete-uid', uid);
+                    obs.disconnect(); // De-register observer instantly once stamped
+                }
+            });
+
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            // Safety timeout to prevent orphan memory leakage if the popup fails to load
+            setTimeout(() => observer.disconnect(), 2000);
+        }, true); // <-- 'true' switches listener to the Capture Phase
+
+        /**
+         * Intercepts the confirmation OK button using the same capture safety mechanism,
+         * in case SillyTavern blocks propagation inside its modal layer too.
+         */
+        document.body.addEventListener('click', function (e) {
+            const targetOk = e.target.closest('.popup-button-ok');
+            if (!targetOk) return;
+
+            const popup = targetOk.closest('dialog.popup');
+            if (!popup) return;
+
+            const deleteUid = popup.getAttribute('data-vcs-delete-uid');
+            if (deleteUid !== undefined && deleteUid !== null) {
+                vcs.confirmDelete(deleteUid);
+            }
+        }, true); // <-- 'true' switches listener to the Capture Phase
+    }
+
+    writeDeleteWorldInfo() {
+        document.body.addEventListener('click', function (e) {
+            const targetButton = e.target.closest('#world_popup_delete');
+            if (!targetButton) return;
+
+            // Extract active world ID tracked by manager
+            const worldId = vcs.current ? vcs.current.id : null;
+            if (!worldId) return;
+
+            log(`VCS: Intercepted world delete trigger for ${worldId}. Monitoring for popup confirmation.`);
+
+            // Spin up mutation observer to look for the confirmation modal arriving
+            const observer = new MutationObserver((mutations, obs) => {
+                const $popup = $('dialog.popup').not('[data-vcs-delete-world]');
+                if ($popup.length && $popup.find('h3').text().includes('Delete the World/Lorebook')) {
+                    $popup.attr('data-vcs-delete-world', worldId);
+                    obs.disconnect(); // De-register observer instantly once stamped
+                }
+            });
+
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            // Safety timeout to prevent orphan memory leakage if the popup fails to load
+            setTimeout(() => observer.disconnect(), 2000);
+        }, true); // <-- 'true' switches listener to the Capture Phase
+
+        /**
+         * Intercepts the confirmation OK button using the same capture safety mechanism,
+         * in case SillyTavern blocks propagation inside its modal layer too.
+         */
+        document.body.addEventListener('click', function (e) {
+            const targetOk = e.target.closest('.popup-button-ok');
+            if (!targetOk) return;
+
+            const popup = targetOk.closest('dialog.popup');
+            if (!popup) return;
+
+            // Check for single entry deletion tracking
+            const deleteUid = popup.getAttribute('data-vcs-delete-uid');
+            if (deleteUid !== undefined && deleteUid !== null) {
+                vcs.confirmDelete(deleteUid);
+            }
+
+            // Check for whole world deletion tracking
+            const deleteWorldId = popup.getAttribute('data-vcs-delete-world');
+            if (deleteWorldId !== undefined && deleteWorldId !== null) {
+                vcs.confirmDeleteWorld(deleteWorldId);
+            }
+
+        }, true); // <-- 'true' switches listener to the Capture Phase
+    }
 }
 
 const vcs = new WorldInfoVCSManager();
+window._debug_enerccio_vcs = vcs;
 
 $(function () {
     // Inject our interface directly into the master entry edit template
@@ -345,32 +505,8 @@ $(function () {
         $template.prepend(REVISION_UI_HTML);
     }
 
-    $('#world_editor_select').on('change', async () => {
-        const selectedIndex = String($('#world_editor_select').find(':selected').val());
-
-        if (selectedIndex === '') {
-            await vcs.load(null);
-        } else {
-            const worldName = world_names[selectedIndex];
-            setTimeout(async () => {
-                const wi = await loadWorldInfo(worldName);
-                if (wi) {
-                    await vcs.load(worldName);
-                }
-            })
-        }
-    });
-
-    $(document).on('click', '.world_entry', function() {
-        const $container = $(this).find('.world_entry_edit');
-        if ($container.length && !$container.data('vcs-bound')) {
-            vcs.openEditor($container);
-            $container.data('vcs-bound', true);
-        }
-    });
-
-    // this is so dumb but we have to do it
-    $('#world_popup_name_button').off('click').on('click', async (e) => {
-
-    });
+    vcs.wireBindWorldSelect();
+    vcs.wireBindEntry();
+    vcs.writeEntryDelete();
+    vcs.writeDeleteWorldInfo();
 });
