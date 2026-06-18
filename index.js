@@ -298,6 +298,7 @@ class WorldInfoVCSManager {
     constructor() {
         this.current = null;
         this.lorebooks = getSettings("lorebooks", true, []);
+        this.pendingRename = null;
 
         this.save = debounce(() => {
             this.persistToStorage();
@@ -339,6 +340,29 @@ class WorldInfoVCSManager {
         if (worldInfoId === null) {
             this.current = null;
         } else {
+            // Handle pending rename data migration
+            if (this.pendingRename && this.pendingRename.newName === worldInfoId && (Date.now() - this.pendingRename.timestamp < 5000)) {
+                const { oldName, newName } = this.pendingRename;
+                this.pendingRename = null; // Clear immediately
+
+                // Verify oldName is no longer in ST's active tracking to confirm successful rename execution
+                const isOldDeleted = typeof world_names !== 'undefined' ? !world_names.includes(oldName) : true;
+
+                if (this.lorebooks.includes(oldName) && isOldDeleted) {
+                    log(`VCS: Rename confirmed from ${oldName} to ${newName}. Migrating tracking history.`);
+                    const oldData = getSettings(`lorebook_${oldName}`);
+                    if (oldData) {
+                        oldData.id = newName;
+                        setSettings(`lorebook_${newName}`, oldData);
+                        delSetting(`lorebook_${oldName}`);
+
+                        this.lorebooks = this.lorebooks.filter(id => id !== oldName);
+                        this.lorebooks.push(newName);
+                        setSettings("lorebooks", this.lorebooks);
+                    }
+                }
+            }
+
             if (this.lorebooks.includes(worldInfoId)) {
                 this.current = WorldInfo.fromJson(getSettings(`lorebook_${worldInfoId}`));
                 this.current.bind();
@@ -394,8 +418,7 @@ class WorldInfoVCSManager {
         });
     }
 
-    writeEntryDelete() {
-
+    wireEntryDelete() {
         document.body.addEventListener('click', function (e) {
             const targetButton = e.target.closest('.delete_entry_button');
             if (!targetButton) return;
@@ -442,7 +465,7 @@ class WorldInfoVCSManager {
         }, true); // <-- 'true' switches listener to the Capture Phase
     }
 
-    writeDeleteWorldInfo() {
+    wireDeleteWorldInfo() {
         document.body.addEventListener('click', function (e) {
             const targetButton = e.target.closest('#world_popup_delete');
             if (!targetButton) return;
@@ -493,6 +516,57 @@ class WorldInfoVCSManager {
 
         }, true); // <-- 'true' switches listener to the Capture Phase
     }
+
+    wireRenameWorldInfo() {
+        document.body.addEventListener('click', function (e) {
+            const targetButton = e.target.closest('#world_popup_name_button');
+            if (!targetButton) return;
+
+            // Extract active world ID tracked by manager
+            const worldId = vcs.current ? vcs.current.id : null;
+            if (!worldId) return;
+
+            log(`VCS: Intercepted world rename trigger for ${worldId}. Monitoring for popup confirmation.`);
+
+            // Spin up mutation observer to look for the confirmation modal arriving
+            const observer = new MutationObserver((mutations, obs) => {
+                const $popup = $('dialog.popup').not('[data-vcs-rename-world]');
+                if ($popup.length && $popup.find('h3').text().includes('Rename World Info')) {
+                    $popup.attr('data-vcs-rename-world', worldId);
+                    obs.disconnect(); // De-register observer instantly once stamped
+                }
+            });
+
+            observer.observe(document.body, { childList: true, subtree: true });
+
+            // Safety timeout to prevent orphan memory leakage if the popup fails to load
+            setTimeout(() => observer.disconnect(), 2000);
+        }, true); // <-- Capture Phase execution
+
+        /**
+         * Intercepts the confirmation OK button to capture the new string payload
+         */
+        document.body.addEventListener('click', function (e) {
+            const targetOk = e.target.closest('.popup-button-ok');
+            if (!targetOk) return;
+
+            const popup = targetOk.closest('dialog.popup');
+            if (!popup) return;
+
+            const oldWorldId = popup.getAttribute('data-vcs-rename-world');
+            if (oldWorldId !== undefined && oldWorldId !== null) {
+                const newName = $(popup).find('.popup-input').val()?.trim();
+                if (newName && oldWorldId !== newName) {
+                    vcs.pendingRename = {
+                        oldName: oldWorldId,
+                        newName: newName,
+                        timestamp: Date.now()
+                    };
+                    log(`VCS: Staging potential rename from ${oldWorldId} to ${newName}`);
+                }
+            }
+        }, true); // <-- Capture Phase execution
+    }
 }
 
 const vcs = new WorldInfoVCSManager();
@@ -507,6 +581,7 @@ $(function () {
 
     vcs.wireBindWorldSelect();
     vcs.wireBindEntry();
-    vcs.writeEntryDelete();
-    vcs.writeDeleteWorldInfo();
+    vcs.wireEntryDelete();
+    vcs.wireDeleteWorldInfo();
+    vcs.wireRenameWorldInfo();
 });
