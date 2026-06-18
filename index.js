@@ -1,5 +1,5 @@
 import {delSetting, getSettings, log, setSettings} from "./utils.js";
-import {debounce} from '/scripts/utils.js';
+import {debounce, getSelect2OptionId, isSelect2ChoiceElement} from '/scripts/utils.js';
 import {loadWorldInfo, world_names} from "/scripts/world-info.js";
 import {Popup} from "/scripts/popup.js";
 
@@ -51,19 +51,64 @@ class LoreEntryRevision {
      */
     applyToDom(container) {
         const $container = $(container);
+
         this.fields.forEach(name => {
-            const val = this.data[name] !== undefined ? this.data[name] : '';
-            $container.find(`[name="${name}"]`)
-                .val(val)
-                .trigger('chosen:updated')
-                .trigger('input')   // Notifies ST input observers
-                .trigger('change'); // Notifies ST change observers
+            const stored = this.data[name];
+            let storedVal = (stored && typeof stored === 'object' && 'value' in stored) ? stored.value : (stored ?? '');
+
+            const $elements = $container.find(`[name="${name}"]`);
+            if ($elements.length === 0) return;
+
+            let isCurrentSelect2 = false;
+            let $targetEl = $elements.first();
+
+            if ($elements.length > 1) {
+                const $textarea = $elements.filter('textarea');
+                if ($textarea.is(':visible')) {
+                    $targetEl = $textarea;
+                    isCurrentSelect2 = false;
+                } else {
+                    $targetEl = $elements.filter('select');
+                    isCurrentSelect2 = true;
+                }
+            } else {
+                isCurrentSelect2 = $targetEl.is('select') && ($targetEl.hasClass('select2-hidden-accessible') || !!$targetEl.data('select2'));
+            }
+
+            const storedStrings = Array.isArray(storedVal)
+                ? storedVal.map(String)
+                : (storedVal ? String(storedVal).split(',').map(s => s.trim()) : []);
+
+            if (isCurrentSelect2) {
+                const $selectEl = $elements.filter('select');
+                const valuesToSelect = [];
+
+                storedStrings.forEach(text => {
+                    // Map text strings cleanly into SillyTavern's internal key hashes
+                    const optionId = typeof getSelect2OptionId === 'function' ? getSelect2OptionId(text) : text;
+
+                    // Force generate the option node dynamically if it doesn't exist yet
+                    if (!$selectEl.find(`option[value="${optionId}"]`).length) {
+                        $selectEl.append(new Option(text, optionId, true, true));
+                    }
+                    valuesToSelect.push(optionId);
+                });
+
+                $selectEl.val(valuesToSelect).trigger('change');
+            } else {
+                $targetEl.val(storedStrings.join(', '));
+            }
+
+            $targetEl.trigger('chosen:updated')
+                .trigger('input')
+                .trigger('change');
         });
+
         this.checkboxes.forEach(name => {
             const checked = !!this.data[name];
             $container.find(`[name="${name}"]`)
                 .prop('checked', checked)
-                .trigger('change'); // Notifies ST checkbox observers
+                .trigger('change');
         });
     }
 
@@ -72,15 +117,44 @@ class LoreEntryRevision {
      */
     bindToDom(container) {
         const $container = $(container);
-
         this.fields.forEach(name => {
-            $container.find(`[name="${name}"]`).on('input.vcs change.vcs', (e) => {
-                this.updateData(name, $(e.target).val());
+            $container.find(`[name="${name}"]`).off('input.vcs change.vcs').on('input.vcs change.vcs', (e) => {
+                const $elements = $container.find(`[name="${name}"]`);
+                let type = 'normal';
+                let strings = [];
+
+                if ($elements.length > 1) {
+                    const $textarea = $elements.filter('textarea');
+                    if ($textarea.is(':visible')) {
+                        type = 'text';
+                        strings = ($textarea.val() ?? '').split(',').map(s => s.trim()).filter(Boolean);
+                    } else {
+                        type = 'select2';
+                        const $select = $elements.filter('select');
+                        const currentSelection = $select.select2 ? ($select.select2('data') || []) : [];
+                        strings = currentSelection.map(item => (item.text || item.id || '').trim()).filter(Boolean);
+                    }
+                } else {
+                    const $el = $(e.target);
+                    const isSelect2 = $el.is('select') && ($el.hasClass('select2-hidden-accessible') || !!$el.data('select2'));
+                    if (isSelect2) {
+                        type = 'select2';
+                        const currentSelection = $el.select2 ? ($el.select2('data') || []) : [];
+                        strings = currentSelection.map(item => (item.text || item.id || '').trim()).filter(Boolean);
+                    } else {
+                        type = 'normal';
+                        strings = $el.val();
+                    }
+                }
+
+                this.data[name] = { type: type, value: strings };
+                this.lastModified = Date.now();
+                this.save();
             });
         });
 
         this.checkboxes.forEach(name => {
-            $container.find(`[name="${name}"]`).on('change.vcs', (e) => {
+            $container.find(`[name="${name}"]`).off('change.vcs').on('change.vcs', (e) => {
                 this.updateData(name, $(e.target).is(':checked'));
             });
         });
@@ -93,15 +167,51 @@ class LoreEntryRevision {
     matchesDom(container) {
         const $container = $(container);
 
-        // Check standard text/select fields
         for (const name of this.fields) {
-            const domVal = $container.find(`[name="${name}"]`).val() ?? '';
-            const storedVal = this.data[name] ?? '';
-            // Cast to string to prevent loose type-coercion bugs (e.g., numbers vs strings)
-            if (String(domVal) !== String(storedVal)) return false;
+            const $elements = $container.find(`[name="${name}"]`);
+            if ($elements.length === 0) continue;
+
+            let isDomSelect2 = false;
+            let $activeEl = $elements.first();
+
+            if ($elements.length > 1) {
+                const $textarea = $elements.filter('textarea');
+                if (!$textarea.is(':visible')) {
+                    isDomSelect2 = true;
+                    $activeEl = $elements.filter('select');
+                } else {
+                    $activeEl = $textarea;
+                }
+            } else {
+                isDomSelect2 = $activeEl.is('select') && ($activeEl.hasClass('select2-hidden-accessible') || !!$activeEl.data('select2'));
+            }
+
+            let domStrings = [];
+            if (isDomSelect2) {
+                const currentSelection = $activeEl.select2 ? ($activeEl.select2('data') || []) : [];
+                domStrings = currentSelection.map(item => (item.text || item.id || '').trim());
+            } else {
+                const rawVal = $activeEl.val() ?? '';
+                domStrings = String(rawVal).split(',').map(s => s.trim());
+            }
+            domStrings = domStrings.map(s => s.toLowerCase()).filter(Boolean).sort();
+
+            const stored = this.data[name];
+            const storedVal = (stored && typeof stored === 'object' && 'value' in stored) ? stored.value : (stored ?? '');
+
+            let storedStrings = [];
+            if (Array.isArray(storedVal)) {
+                storedStrings = storedVal.map(String);
+            } else {
+                storedStrings = String(storedVal).split(',').map(s => s.trim());
+            }
+            storedStrings = storedStrings.map(s => s.toLowerCase()).filter(Boolean).sort();
+
+            if (domStrings.join(',') !== storedStrings.join(',')) {
+                return false;
+            }
         }
 
-        // Check checkboxes
         for (const name of this.checkboxes) {
             const domChecked = $container.find(`[name="${name}"]`).is(':checked');
             const storedChecked = !!this.data[name];
@@ -155,25 +265,30 @@ class LoreEntry {
         const $container = $(container);
 
         // Core Actions
-        $container.find('.rev-btn-add').off('.vcs_meta').on('click.vcs_meta', () => {
+        $container.find('.rev-btn-add').off('.vcs_meta').on('click.vcs_meta', (e) => {
             this.createNewRevisionFromCurrentState($container);
+            e.stopPropagation();
         });
 
-        $container.find('.rev-btn-delete').off('.vcs_meta').on('click.vcs_meta', () => {
+        $container.find('.rev-btn-delete').off('.vcs_meta').on('click.vcs_meta', (e) => {
             this.deleteCurrentRevision($container);
+            e.stopPropagation();
         });
 
-        $container.find('.rev-btn-prev').off('.vcs_meta').on('click.vcs_meta', () => {
+        $container.find('.rev-btn-prev').off('.vcs_meta').on('click.vcs_meta', (e) => {
             this.switchToRevision(this.currentRevision - 1, $container);
+            e.stopPropagation();
         });
 
-        $container.find('.rev-btn-next').off('.vcs_meta').on('click.vcs_meta', () => {
+        $container.find('.rev-btn-next').off('.vcs_meta').on('click.vcs_meta', (e) => {
             this.switchToRevision(this.currentRevision + 1, $container);
+            e.stopPropagation();
         });
 
         $container.find('.rev-select').off('.vcs_meta').on('change.vcs_meta', (e) => {
             const idx = parseInt($(e.target).val(), 10);
             this.switchToRevision(idx, $container);
+            e.stopPropagation();
         });
 
         if (this.revisions.length === 0) {
@@ -226,10 +341,35 @@ class LoreEntry {
         newRev.revisionId = `rev-${Date.now()}`;
         newRev.lastModified = Date.now();
 
-        // Fill initial payload fields directly out of the current physical state of the DOM
         newRev.fields.forEach(name => {
-            newRev.data[name] = $container.find(`[name="${name}"]`).val();
+            const $elements = $container.find(`[name="${name}"]`);
+            if ($elements.length > 1) {
+                const $textarea = $elements.filter('textarea');
+                if ($textarea.is(':visible')) {
+                    const rawVal = $textarea.val() ?? '';
+                    const strings = rawVal.split(',').map(s => s.trim()).filter(Boolean);
+                    newRev.data[name] = { type: 'text', value: strings };
+                } else {
+                    const $select = $elements.filter('select');
+                    const currentSelection = $select.select2 ? ($select.select2('data') || []) : [];
+                    const strings = currentSelection.map(item => (item.text || item.id || '').trim()).filter(Boolean);
+                    newRev.data[name] = { type: 'select2', value: strings };
+                }
+            } else if ($elements.length === 1) {
+                const $el = $elements.first();
+                const isSelect2 = $el.is('select') && ($el.hasClass('select2-hidden-accessible') || !!$el.data('select2'));
+                if (isSelect2) {
+                    const currentSelection = $el.select2 ? ($el.select2('data') || []) : [];
+                    const strings = currentSelection.map(item => (item.text || item.id || '').trim()).filter(Boolean);
+                    newRev.data[name] = { type: 'select2', value: strings };
+                } else {
+                    newRev.data[name] = { type: 'normal', value: $el.val() };
+                }
+            } else {
+                newRev.data[name] = { type: 'normal', value: '' };
+            }
         });
+
         newRev.checkboxes.forEach(name => {
             newRev.data[name] = $container.find(`[name="${name}"]`).is(':checked');
         });
