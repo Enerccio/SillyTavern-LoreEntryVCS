@@ -379,13 +379,11 @@ class WorldInfoVCSManager {
             this.current = null;
         } else {
             // Handle pending rename data migration
-            if (this.pendingRename && this.pendingRename.newName === worldInfoId && (Date.now() - this.pendingRename.timestamp < 5000)) {
-                const { oldName, newName } = this.pendingRename;
-                this.pendingRename = null; // Clear immediately
+            if (this.pendingRename && this.pendingRename.newName === worldInfoId) {
+                const {oldName, newName} = this.pendingRename;
+                this.pendingRename = null; // Clear it immediately because the expected event fired!
 
-                // Verify oldName is no longer in ST's active tracking to confirm successful rename execution
                 const isOldDeleted = typeof world_names !== 'undefined' ? !world_names.includes(oldName) : true;
-
                 if (this.lorebooks.includes(oldName) && isOldDeleted) {
                     log(`VCS: Rename confirmed from ${oldName} to ${newName}. Migrating tracking history.`);
                     const oldData = getSettings(`lorebook_${oldName}`);
@@ -399,6 +397,8 @@ class WorldInfoVCSManager {
                         setSettings("lorebooks", this.lorebooks);
                     }
                 }
+            } else {
+                this.pendingRename = null;
             }
 
             if (this.lorebooks.includes(worldInfoId)) {
