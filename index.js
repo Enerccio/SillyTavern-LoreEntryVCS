@@ -141,8 +141,6 @@ class LoreEntryRevision {
                     } else {
                         type = 'normal';
                         strings = $el.val();
-
-                        const $el = $(e.target);
                         if ($el.is('input[type="number"]')) {
                             type = 'number';
                             strings = $el.val();
