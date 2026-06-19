@@ -188,7 +188,6 @@ class LoreEntryRevision {
                 isDomSelect2 = $activeEl.is('select') && ($activeEl.hasClass('select2-hidden-accessible') || !!$activeEl.data('select2'));
             }
 
-            // --- FIX: Direct Numeric Evaluation Loop ---
             if ($activeEl.is('input[type="number"]')) {
                 const domNum = Number($activeEl.val() || 0);
                 const stored = this.data[name];
