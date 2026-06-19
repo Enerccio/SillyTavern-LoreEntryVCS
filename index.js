@@ -46,9 +46,6 @@ class LoreEntryRevision {
         ];
     }
 
-    /**
-     * Overwrites native DOM elements with this revision's data payload
-     */
     applyToDom(container) {
         const $container = $(container);
 
@@ -75,6 +72,13 @@ class LoreEntryRevision {
                 isCurrentSelect2 = $targetEl.is('select') && ($targetEl.hasClass('select2-hidden-accessible') || !!$targetEl.data('select2'));
             }
 
+            if ($targetEl.is('input[type="number"]')) {
+                const numVal = (storedVal === '' || storedVal == null) ? '' : Number(storedVal);
+                $targetEl.val(numVal);
+                $targetEl.trigger('chosen:updated').trigger('input').trigger('change');
+                return;
+            }
+
             const storedStrings = Array.isArray(storedVal)
                 ? storedVal.map(String)
                 : (storedVal ? String(storedVal).split(',').map(s => s.trim()) : []);
@@ -84,10 +88,7 @@ class LoreEntryRevision {
                 const valuesToSelect = [];
 
                 storedStrings.forEach(text => {
-                    // Map text strings cleanly into SillyTavern's internal key hashes
                     const optionId = typeof getSelect2OptionId === 'function' ? getSelect2OptionId(text) : text;
-
-                    // Force generate the option node dynamically if it doesn't exist yet
                     if (!$selectEl.find(`option[value="${optionId}"]`).length) {
                         $selectEl.append(new Option(text, optionId, true, true));
                     }
@@ -99,16 +100,12 @@ class LoreEntryRevision {
                 $targetEl.val(storedStrings.join(', '));
             }
 
-            $targetEl.trigger('chosen:updated')
-                .trigger('input')
-                .trigger('change');
+            $targetEl.trigger('chosen:updated').trigger('input').trigger('change');
         });
 
         this.checkboxes.forEach(name => {
             const checked = !!this.data[name];
-            $container.find(`[name="${name}"]`)
-                .prop('checked', checked)
-                .trigger('change');
+            $container.find(`[name="${name}"]`).prop('checked', checked).trigger('change');
         });
     }
 
@@ -144,6 +141,12 @@ class LoreEntryRevision {
                     } else {
                         type = 'normal';
                         strings = $el.val();
+
+                        const $el = $(e.target);
+                        if ($el.is('input[type="number"]')) {
+                            type = 'number';
+                            strings = $el.val();
+                        }
                     }
                 }
 
@@ -162,7 +165,6 @@ class LoreEntryRevision {
 
     /**
      * Compares the current physical DOM values against this revision's cached payload.
-     * Returns true if they match perfectly, false if the DOM has diverged.
      */
     matchesDom(container) {
         const $container = $(container);
@@ -184,6 +186,17 @@ class LoreEntryRevision {
                 }
             } else {
                 isDomSelect2 = $activeEl.is('select') && ($activeEl.hasClass('select2-hidden-accessible') || !!$activeEl.data('select2'));
+            }
+
+            // --- FIX: Direct Numeric Evaluation Loop ---
+            if ($activeEl.is('input[type="number"]')) {
+                const domNum = Number($activeEl.val() || 0);
+                const stored = this.data[name];
+                const storedVal = (stored && typeof stored === 'object' && 'value' in stored) ? stored.value : (stored ?? 0);
+                const storedNum = Number(storedVal || 0);
+
+                if (domNum !== storedNum) return false;
+                continue; // Skip array string mapping for number elements
             }
 
             let domStrings = [];
@@ -363,7 +376,11 @@ class LoreEntry {
                     const strings = currentSelection.map(item => (item.text || item.id || '').trim()).filter(Boolean);
                     newRev.data[name] = { type: 'select2', value: strings };
                 } else {
-                    newRev.data[name] = { type: 'normal', value: $el.val() };
+                    if ($el.is('input[type="number"]')) {
+                        newRev.data[name] = { type: 'number', value: $el.val() };
+                    } else {
+                        newRev.data[name] = { type: 'normal', value: $el.val() };
+                    }
                 }
             } else {
                 newRev.data[name] = { type: 'normal', value: '' };
