@@ -87,15 +87,29 @@ class LoreEntryRevision {
                 const $selectEl = $elements.filter('select');
                 const valuesToSelect = [];
                 const isKeywordField = (name === 'key' || name === 'keysecondary');
+                const isCharacterFilterField = (name === 'characterFilter');
 
                 storedStrings.forEach(val => {
                     if (isKeywordField) {
-                        // Free-text tags get dynamic numeric option hashing
                         const optionId = typeof getSelect2OptionId === 'function' ? getSelect2OptionId(val) : val;
                         if (!$selectEl.find(`option[value="${optionId}"]`).length) {
                             $selectEl.append(new Option(val, optionId, true, true));
                         }
                         valuesToSelect.push(optionId);
+                    } else if (isCharacterFilterField) {
+                        // Scan rendered options to translate text markers like "[Tag] MyTag" back into current active UUIDs
+                        let $existingOpt = $selectEl.find('option').filter((_, opt) => $(opt).text().trim().toLowerCase() === val.toLowerCase());
+
+                        // Fallback check by value directly to support backward compatibility for legacy saved UUID entries
+                        if (!$existingOpt.length) {
+                            $existingOpt = $selectEl.find(`option[value="${val}"]`);
+                        }
+
+                        if ($existingOpt.length) {
+                            valuesToSelect.push($existingOpt.val());
+                        } else {
+                            valuesToSelect.push(val);
+                        }
                     } else {
                         // Standard option tokens pass through strictly matching HTML values
                         let $existingOpt = $selectEl.find(`option[value="${val}"]`);
@@ -144,9 +158,9 @@ class LoreEntryRevision {
                         type = 'select2';
                         const $select = $elements.filter('select');
                         const currentSelection = $select.select2 ? ($select.select2('data') || []) : [];
-                        const isKeywordField = (name === 'key' || name === 'keysecondary');
+                        const isTextTracked = (name === 'key' || name === 'keysecondary' || name === 'characterFilter');
                         strings = currentSelection.map(item => {
-                            return isKeywordField ? (item.text || '').trim() : (item.id || '').trim();
+                            return isTextTracked ? (item.text || '').trim() : (item.id || '').trim();
                         }).filter(Boolean);
                     }
                 } else {
@@ -156,9 +170,9 @@ class LoreEntryRevision {
                     if (isSelect2) {
                         type = 'select2';
                         const currentSelection = $el.select2 ? ($el.select2('data') || []) : [];
-                        const isKeywordField = (name === 'key' || name === 'keysecondary');
+                        const isTextTracked = (name === 'key' || name === 'keysecondary' || name === 'characterFilter');
                         strings = currentSelection.map(item => {
-                            return isKeywordField ? (item.text || '').trim() : (item.id || '').trim();
+                            return isTextTracked ? (item.text || '').trim() : (item.id || '').trim();
                         }).filter(Boolean);
                     } else if ($el.is('input[type="number"]')) {
                         type = 'number';
@@ -220,9 +234,9 @@ class LoreEntryRevision {
             let domStrings = [];
             if (isDomSelect2) {
                 const currentSelection = $activeEl.select2 ? ($activeEl.select2('data') || []) : [];
-                const isKeywordField = (name === 'key' || name === 'keysecondary');
+                const isTextTracked = (name === 'key' || name === 'keysecondary' || name === 'characterFilter');
                 domStrings = currentSelection.map(item => {
-                    return isKeywordField ? (item.text || '').trim() : (item.id || '').trim();
+                    return isTextTracked ? (item.text || '').trim() : (item.id || '').trim();
                 });
             } else {
                 const rawVal = $activeEl.val() ?? '';
