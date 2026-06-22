@@ -86,13 +86,28 @@ class LoreEntryRevision {
             if (isCurrentSelect2) {
                 const $selectEl = $elements.filter('select');
                 const valuesToSelect = [];
+                const isKeywordField = (name === 'key' || name === 'keysecondary');
 
-                storedStrings.forEach(text => {
-                    const optionId = typeof getSelect2OptionId === 'function' ? getSelect2OptionId(text) : text;
-                    if (!$selectEl.find(`option[value="${optionId}"]`).length) {
-                        $selectEl.append(new Option(text, optionId, true, true));
+                storedStrings.forEach(val => {
+                    if (isKeywordField) {
+                        // Free-text tags get dynamic numeric option hashing
+                        const optionId = typeof getSelect2OptionId === 'function' ? getSelect2OptionId(val) : val;
+                        if (!$selectEl.find(`option[value="${optionId}"]`).length) {
+                            $selectEl.append(new Option(val, optionId, true, true));
+                        }
+                        valuesToSelect.push(optionId);
+                    } else {
+                        // Standard option tokens pass through strictly matching HTML values
+                        let $existingOpt = $selectEl.find(`option[value="${val}"]`);
+                        if (!$existingOpt.length) {
+                            $existingOpt = $selectEl.find('option').filter((_, opt) => $(opt).text().trim().toLowerCase() === val.toLowerCase());
+                        }
+                        if ($existingOpt.length) {
+                            valuesToSelect.push($existingOpt.val());
+                        } else {
+                            valuesToSelect.push(val);
+                        }
                     }
-                    valuesToSelect.push(optionId);
                 });
 
                 $selectEl.val(valuesToSelect).trigger('change');
@@ -129,22 +144,28 @@ class LoreEntryRevision {
                         type = 'select2';
                         const $select = $elements.filter('select');
                         const currentSelection = $select.select2 ? ($select.select2('data') || []) : [];
-                        strings = currentSelection.map(item => (item.text || item.id || '').trim()).filter(Boolean);
+                        const isKeywordField = (name === 'key' || name === 'keysecondary');
+                        strings = currentSelection.map(item => {
+                            return isKeywordField ? (item.text || '').trim() : (item.id || '').trim();
+                        }).filter(Boolean);
                     }
                 } else {
                     const $el = $(e.target);
                     const isSelect2 = $el.is('select') && ($el.hasClass('select2-hidden-accessible') || !!$el.data('select2'));
+
                     if (isSelect2) {
                         type = 'select2';
                         const currentSelection = $el.select2 ? ($el.select2('data') || []) : [];
-                        strings = currentSelection.map(item => (item.text || item.id || '').trim()).filter(Boolean);
+                        const isKeywordField = (name === 'key' || name === 'keysecondary');
+                        strings = currentSelection.map(item => {
+                            return isKeywordField ? (item.text || '').trim() : (item.id || '').trim();
+                        }).filter(Boolean);
+                    } else if ($el.is('input[type="number"]')) {
+                        type = 'number';
+                        strings = $el.val();
                     } else {
                         type = 'normal';
                         strings = $el.val();
-                        if ($el.is('input[type="number"]')) {
-                            type = 'number';
-                            strings = $el.val();
-                        }
                     }
                 }
 
@@ -193,13 +214,16 @@ class LoreEntryRevision {
                 const storedNum = Number(storedVal || 0);
 
                 if (domNum !== storedNum) return false;
-                continue; // Skip array string mapping for number elements
+                continue;
             }
 
             let domStrings = [];
             if (isDomSelect2) {
                 const currentSelection = $activeEl.select2 ? ($activeEl.select2('data') || []) : [];
-                domStrings = currentSelection.map(item => (item.text || item.id || '').trim());
+                const isKeywordField = (name === 'key' || name === 'keysecondary');
+                domStrings = currentSelection.map(item => {
+                    return isKeywordField ? (item.text || '').trim() : (item.id || '').trim();
+                });
             } else {
                 const rawVal = $activeEl.val() ?? '';
                 domStrings = String(rawVal).split(',').map(s => s.trim());
@@ -362,7 +386,10 @@ class LoreEntry {
                 } else {
                     const $select = $elements.filter('select');
                     const currentSelection = $select.select2 ? ($select.select2('data') || []) : [];
-                    const strings = currentSelection.map(item => (item.text || item.id || '').trim()).filter(Boolean);
+                    const isKeywordField = (name === 'key' || name === 'keysecondary');
+                    const strings = currentSelection.map(item => {
+                        return isKeywordField ? (item.text || '').trim() : (item.id || '').trim();
+                    }).filter(Boolean);
                     newRev.data[name] = { type: 'select2', value: strings };
                 }
             } else if ($elements.length === 1) {
@@ -370,14 +397,15 @@ class LoreEntry {
                 const isSelect2 = $el.is('select') && ($el.hasClass('select2-hidden-accessible') || !!$el.data('select2'));
                 if (isSelect2) {
                     const currentSelection = $el.select2 ? ($el.select2('data') || []) : [];
-                    const strings = currentSelection.map(item => (item.text || item.id || '').trim()).filter(Boolean);
+                    const isKeywordField = (name === 'key' || name === 'keysecondary');
+                    const strings = currentSelection.map(item => {
+                        return isKeywordField ? (item.text || '').trim() : (item.id || '').trim();
+                    }).filter(Boolean);
                     newRev.data[name] = { type: 'select2', value: strings };
+                } else if ($el.is('input[type="number"]')) {
+                    newRev.data[name] = { type: 'number', value: $el.val() };
                 } else {
-                    if ($el.is('input[type="number"]')) {
-                        newRev.data[name] = { type: 'number', value: $el.val() };
-                    } else {
-                        newRev.data[name] = { type: 'normal', value: $el.val() };
-                    }
+                    newRev.data[name] = { type: 'normal', value: $el.val() };
                 }
             } else {
                 newRev.data[name] = { type: 'normal', value: '' };
