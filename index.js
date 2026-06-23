@@ -16,7 +16,9 @@ const REVISION_UI_HTML = `
         <div class="flex-container flexGap5 alignitemscenter">
             <button type="button" class="menu_button rev-btn-delete" title="Delete current revision" style="background: #5a2a2a;">-</button>
             <button type="button" class="menu_button rev-btn-prev" title="Previous revision">◀</button>
-            <select class="text_pole rev-select" style="width: 130px; margin: 0 4px;"></select>
+
+            <select class="text_pole rev-select" style="width: 210px; margin: 0 4px;"></select>
+
             <button type="button" class="menu_button rev-btn-next" title="Next revision">▶</button>
             <button type="button" class="menu_button rev-btn-add" title="Create snapshot revision" style="background: #2a5a3a;">+</button>
         </div>
@@ -451,14 +453,14 @@ class LoreEntry {
         $container.find('.rev-index-display').text(`${humanIndex} / ${total}`);
 
         const current = this.revisions[this.currentRevision];
-        const dateStr = current ? new Date(current.lastModified).toLocaleTimeString() : '-';
+        const dateStr = current ? new Date(current.lastModified).toLocaleString() : '-';
         $container.find('.rev-modified-text').text(dateStr);
 
         // Render drop-down choices dynamically
         const $select = $container.find('.rev-select');
         $select.empty();
         this.revisions.forEach((rev, idx) => {
-            const optTitle = `Rev ${idx + 1} (${new Date(rev.lastModified).toLocaleTimeString()})`;
+            const optTitle = `Rev ${idx + 1} (${new Date(rev.lastModified).toLocaleString()})`;
             const selectedAttr = idx === this.currentRevision ? 'selected' : '';
             $select.append(`<option value="${idx}" ${selectedAttr}>${optTitle}</option>`);
         });
